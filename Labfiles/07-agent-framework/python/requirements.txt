@@ -1,4 +1,11 @@
+# Loads settings from a .env file so you can keep secrets out of your code
 python-dotenv
+
+# Handles login and authentication with Azure services (like Foundry)
 azure-identity
+
+# Microsoft Agent Framework SDK - lets you build and run AI agents
 agent-framework==1.0.0b260212
+
+# Adds AI-specific tracking labels for monitoring and debugging agent behavior
 opentelemetry-semantic-conventions-ai==0.4.13
