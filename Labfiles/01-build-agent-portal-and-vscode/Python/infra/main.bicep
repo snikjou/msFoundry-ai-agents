@@ -42,8 +42,8 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   location: location
   kind: 'linux'
   sku: {
-    name: 'S1'
-    tier: 'Standard'
+    name: 'P0v3'
+    tier: 'PremiumV3'
   }
   properties: {
     reserved: true // required for Linux
@@ -65,7 +65,6 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
       appCommandLine: 'gunicorn --bind=0.0.0.0 --timeout 600 web_chatbot:app'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      alwaysOn: true
       appSettings: [
         {
           name: 'PROJECT_ENDPOINT'
