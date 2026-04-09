@@ -4,8 +4,6 @@ import base64
 import uuid
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, send_file
-from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
 # Load settings from .env file
@@ -17,25 +15,39 @@ app = Flask(__name__, static_folder="static")
 OUTPUT_DIR = Path("agent_outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# --- Connect to Azure AI Foundry once when the server starts ---
+# --- Lazy connection to Azure AI Foundry (connects on first request, not at import) ---
 
 project_endpoint = os.environ.get("PROJECT_ENDPOINT")
-agent_name = os.environ.get("AGENT_NAME", "it-support-agent")
+agent_name_env = os.environ.get("AGENT_NAME", "it-support-agent")
 
-if not project_endpoint:
-    raise RuntimeError("PROJECT_ENDPOINT is not set. Add it to .env")
+# These will be set on first request
+_openai_client = None
+_agent = None
+_initialized = False
 
-# Sign in to Azure and set up the clients
-credential = DefaultAzureCredential()
-project_client = AIProjectClient(credential=credential, endpoint=project_endpoint)
-openai_client = project_client.get_openai_client()
-
-# Load the agent we created in the Foundry portal
-agent = project_client.agents.get(agent_name=agent_name)
-print(f"Agent loaded: {agent.name} (id: {agent.id})")
-
-# Store active conversations in memory (conversation_id -> openai conversation id)
+# Store active conversations in memory (session_id -> openai conversation id)
 conversations: dict[str, str] = {}
+
+
+def get_clients():
+    """Connect to Azure AI Foundry lazily on first use."""
+    global _openai_client, _agent, _initialized
+    if _initialized:
+        return _openai_client, _agent
+
+    from azure.ai.projects import AIProjectClient
+    from azure.identity import DefaultAzureCredential
+
+    if not project_endpoint:
+        raise RuntimeError("PROJECT_ENDPOINT is not set. Add it to .env or App Service settings.")
+
+    credential = DefaultAzureCredential()
+    project_client = AIProjectClient(credential=credential, endpoint=project_endpoint)
+    _openai_client = project_client.get_openai_client()
+    _agent = project_client.agents.get(agent_name=agent_name_env)
+    _initialized = True
+    print(f"Agent loaded: {_agent.name} (id: {_agent.id})")
+    return _openai_client, _agent
 
 
 # --- Helper functions ---
@@ -90,7 +102,8 @@ def extract_response(response):
                 filename = annotation.filename
                 container_id = annotation.container_id
                 # Download the file from the agent's container
-                file_content = openai_client.containers.files.content.retrieve(
+                oc, _ = get_clients()
+                file_content = oc.containers.files.content.retrieve(
                     file_id=file_id, container_id=container_id
                 )
                 filepath = OUTPUT_DIR / filename
@@ -116,6 +129,7 @@ def index():
 @app.route("/api/conversation", methods=["POST"])
 def create_conversation():
     """Start a new chat conversation and return its ID."""
+    openai_client, _ = get_clients()
     conv = openai_client.conversations.create(items=[])
     session_id = uuid.uuid4().hex
     conversations[session_id] = conv.id
@@ -131,6 +145,8 @@ def chat():
 
     if not user_message:
         return jsonify({"error": "Message is empty"}), 400
+
+    openai_client, agent = get_clients()
 
     # Find or create a conversation
     if session_id not in conversations:
