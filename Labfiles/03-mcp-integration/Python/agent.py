@@ -75,7 +75,7 @@ with (
     # 'extra_body' tells the service which agent should handle this request
     response = openai_client.responses.create(
         conversation=conversation.id,
-        input="Give me the Azure CLI commands to create an Azure Container App with a managed identity.",
+        input="What is Microsoft Agent Framework?.",
         extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
     )
 

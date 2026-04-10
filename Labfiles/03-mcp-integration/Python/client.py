@@ -10,6 +10,8 @@ from azure.ai.projects.models import PromptAgentDefinition, FunctionTool
 from openai.types.responses.response_input_param import FunctionCallOutput, ResponseInputParam
 
 # Add references
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 
 # Clear the console
@@ -28,13 +30,17 @@ async def connect_to_server(exit_stack: AsyncExitStack):
     )
 
     # Start the MCP server
-
+    stdio_transport = await exit_stack.enter_async_context(stdio_client(server_params))
+    stdio, write = stdio_transport
 
     # Create an MCP client session
-    
+    session = await exit_stack.enter_async_context(ClientSession(stdio, write))
+    await session.initialize()
 
     # List available tools
-   
+    response = await session.list_tools()
+    tools = response.tools
+    print("\nConnected to server with tools:", [tool.name for tool in tools])
 
     return session
 
@@ -52,12 +58,45 @@ async def chat_loop(session):
         tools = response.tools
 
         # Build a function for each tool
+        def make_tool_func(tool_name):
+            async def tool_func(**kwargs):
+                result = await session.call_tool(tool_name, kwargs)
+                return result
 
+            tool_func.__name__ = tool_name
+            return tool_func
+
+        # Store the functions in a dictionary for easy access when processing function calls
+        functions_dict = {tool.name: make_tool_func(tool.name) for tool in tools}
 
         # Create FunctionTool definitions for the agent
-        
+        mcp_function_tools: FunctionTool = []
+        for tool in tools:
+            function_tool = FunctionTool(
+                name=tool.name,
+                description=tool.description,
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                strict=True
+            )
+            mcp_function_tools.append(function_tool)
 
         # Create the agent
+        agent = project_client.agents.create_version(
+            agent_name="inventory-agent",
+            definition=PromptAgentDefinition(
+                model=model_deployment,
+                instructions="""
+                You are an inventory assistant. Here are some general guidelines:
+                - Recommend restock if item inventory < 10  and weekly sales > 15
+                - Recommend clearance if item inventory > 20 and weekly sales < 5
+                """,
+                tools=mcp_function_tools
+            ),
+        )
 
 
         # Create a thread for the chat session
@@ -71,6 +110,9 @@ async def chat_loop(session):
             if user_input.lower() == "quit":
                 print("Exiting chat.")
                 break
+
+            # Reset input list for each iteration
+            input_list = []
 
             # Send a prompt to the agent
             openai_client.conversations.items.create(
@@ -90,11 +132,33 @@ async def chat_loop(session):
                 print(f"Response failed: {response.error}")
 
             # Process function calls
+            for item in response.output:
+                if item.type == "function_call":
+                    # Retrieve the matching function tool
+                    function_name = item.name
+                    kwargs = json.loads(item.arguments)
+                    required_function = functions_dict.get(function_name)
 
+                    # Invoke the function
+                    output = await required_function(**kwargs)
+
+                    # Append the output text
+                    input_list.append(
+                       FunctionCallOutput(
+                          type="function_call_output",
+                          call_id=item.call_id,
+                          output=output.content[0].text,
+                       )
+                    )
 
             # Send function call outputs back to the model and retrieve a response
-           
-           
+            if input_list:
+                response = openai_client.responses.create(
+                    conversation=conversation.id,
+                    input=input_list,
+                    extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
+                )
+            print(f"Agent response: {response.output_text}")
         # Delete the agent when done
         print("Cleaning up agents:")
         project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
